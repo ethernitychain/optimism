@@ -28,12 +28,17 @@ var (
 	bc, _ = compressor.NewBlindCompressor(compressor.Config{
 		TargetOutputSize: 100_000_000_000,
 	})
+	realc, _ = compressor.NewShadowCompressor(compressor.Config{
+		// this target size was determiend by the devnet sepolia batcher's configuration
+		TargetOutputSize: 780120,
+	})
 
 	compressors = map[string]derive.Compressor{
 		"BlindCompressor":  bc,
 		"NonCompressor":    nc,
 		"RatioCompressor":  rc,
 		"ShadowCompressor": sc,
+		"RealCompressor":   realc,
 	}
 
 	// batch types used in the benchmark
@@ -125,6 +130,53 @@ func BenchmarkFinalBatchChannelOut(b *testing.B) {
 				require.NoError(b, err)
 			}
 		})
+	}
+}
+
+// BenchmarkIncremental fills a channel out incrementally with batches
+// each increment is counted as its own benchmark
+// Hint: use -benchtime=1x to run the benchmarks for a single iteration
+// it is not currently designed to use b.N
+func BenchmarkIncremental(b *testing.B) {
+	chainID := big.NewInt(333)
+	rng := rand.New(rand.NewSource(0x543331))
+	// use the real compressor for this benchmark
+	// use batchCount as the number of batches to add in each benchmark iteration
+	// and use txPerBatch as the number of transactions per batch
+	tcs := []BatchingBenchmarkTC{
+		{derive.SpanBatchType, 100, 1, ""},
+		//{derive.SingularBatchType, 100, 1, ""},
+	}
+	for _, tc := range tcs {
+		cout, err := derive.NewChannelOut(tc.BatchType, compressors["RealCompressor"], derive.NewSpanBatch(0, chainID))
+		if err != nil {
+			b.Fatal(err)
+		}
+		done := false
+		for base := 0; !done; base += tc.BatchCount {
+			rangeName := fmt.Sprintf("Incremental %s: %d-%d", tc.String(), base, base+tc.BatchCount)
+			b.Run(rangeName, func(b *testing.B) {
+				b.StopTimer()
+				// prepare the batches
+				t := time.Now()
+				batches := make([]*derive.SingularBatch, tc.BatchCount)
+				for i := 0; i < tc.BatchCount; i++ {
+					t := t.Add(time.Second)
+					batches[i] = derive.RandomSingularBatch(rng, tc.txPerBatch, chainID)
+					// set the timestamp to increase with each batch
+					// to leverage optimizations in the Batch Linked List
+					batches[i].Timestamp = uint64(t.Unix())
+				}
+				b.StartTimer()
+				for i := 0; i < tc.BatchCount; i++ {
+					_, err := cout.AddSingularBatch(batches[i], 0)
+					if err != nil {
+						done = true
+						return
+					}
+				}
+			})
+		}
 	}
 }
 

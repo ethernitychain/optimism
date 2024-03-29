@@ -3,6 +3,7 @@ package compressor
 import (
 	"bytes"
 	"compress/zlib"
+	"fmt"
 
 	"github.com/ethereum-optimism/optimism/op-node/rollup/derive"
 )
@@ -16,6 +17,7 @@ type BlindCompressor struct {
 	inputBytes int
 	buf        bytes.Buffer
 	compress   *zlib.Writer
+	buildbuf   []byte
 }
 
 // NewBlindCompressor creates a new derive.Compressor implementation that compresses
@@ -33,11 +35,27 @@ func NewBlindCompressor(config Config) (derive.Compressor, error) {
 	return c, nil
 }
 
+func (t *BlindCompressor) TargetOutputSize() uint64 {
+	return t.config.TargetOutputSize
+}
+
 func (t *BlindCompressor) Write(p []byte) (int, error) {
+	// always start by flushing for an accurate size of compressed data
+	t.compress.Flush()
+	// grow the building buffer with the new input
+	t.buildbuf = append(t.buildbuf, p...)
+	// if the buffer plus the already compressed data is under the target size, return
+	// once enough data has been written, the buffer will be flushed and compressed
+	if uint64(len(t.buildbuf)+t.buf.Len()) < t.config.TargetOutputSize {
+		fmt.Println("returning early")
+		return len(p), nil
+	}
 	if err := t.FullErr(); err != nil {
 		return 0, err
 	}
 	t.inputBytes += len(p)
+	t.buildbuf = nil
+	fmt.Println("compressing")
 	return t.compress.Write(p)
 }
 
